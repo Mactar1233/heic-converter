@@ -11,6 +11,25 @@ function loadHeic2any() {
   return heic2anyPromise;
 }
 
+// Fallback for files the browser can already decode (e.g. an iPhone photo that
+// is really a JPEG but carries a .heic name/extension). heic2any refuses these
+// with "image is already browser readable", so we re-encode to PNG on a canvas.
+async function browserDecodeToPng(blob) {
+  const bitmap = await createImageBitmap(blob);
+  const canvas = document.createElement("canvas");
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(bitmap, 0, 0);
+  if (typeof bitmap.close === "function") bitmap.close();
+  return await new Promise((resolve, reject) =>
+    canvas.toBlob(
+      (b) => (b ? resolve(b) : reject(new Error("Canvas export failed"))),
+      "image/png"
+    )
+  );
+}
+
 function isHeic(file) {
   const name = file.name.toLowerCase();
   return (
@@ -42,13 +61,20 @@ export default function Converter() {
 
   const convertOne = useCallback(async (id, file) => {
     try {
-      const heic2any = await loadHeic2any();
-      const result = await heic2any({
-        blob: file,
-        toType: "image/png",
-        quality: 1,
-      });
-      const blob = Array.isArray(result) ? result[0] : result;
+      let blob;
+      try {
+        const heic2any = await loadHeic2any();
+        const result = await heic2any({
+          blob: file,
+          toType: "image/png",
+          quality: 1,
+        });
+        blob = Array.isArray(result) ? result[0] : result;
+      } catch (heicErr) {
+        // heic2any throws "already browser readable" when the file isn't true
+        // HEIC (often a JPEG in disguise). Fall back to decoding it directly.
+        blob = await browserDecodeToPng(file);
+      }
       const url = URL.createObjectURL(blob);
       setItems((prev) =>
         prev.map((it) =>
